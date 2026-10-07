@@ -1,0 +1,221 @@
+name: Preserve Source APKs
+
+on:
+  push:
+    branches:
+      - apk-preserve-20261007
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web-apks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build unchanged-source WebView APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/apkbuild"
+          OUT="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$ROOT" "$OUT"
+
+          cat > "$ROOT/settings.gradle" <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'PreservedApps'
+          include ':paper', ':paperseed', ':foundryevolution', ':allthepaper'
+          EOF
+
+          cat > "$ROOT/build.gradle" <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          make_module() {
+            MOD="$1"
+            PKG="$2"
+            LABEL="$3"
+            ASSET="$4"
+            URL="$5"
+
+            BASE="$ROOT/$MOD"
+            JAVA_DIR="$BASE/src/main/java/$(echo "$PKG" | tr '.' '/')"
+            ASSET_DIR="$BASE/src/main/assets"
+            mkdir -p "$JAVA_DIR" "$ASSET_DIR"
+
+            cat > "$BASE/build.gradle" <<EOF
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace '$PKG'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId '$PKG'
+                  minSdk 24
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+          EOF
+
+            cat > "$BASE/src/main/AndroidManifest.xml" <<EOF
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <application
+                  android:label="$LABEL"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+            cat > "$JAVA_DIR/MainActivity.java" <<EOF
+          package $PKG;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.setWebChromeClient(new WebChromeClient());
+                  setContentView(webView);
+                  webView.loadUrl("file:///android_asset/$ASSET");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+
+            curl -fL --retry 3 "$URL" -o "$ASSET_DIR/$ASSET"
+            printf '%s  %s  %s\n' "$(sha256sum "$ASSET_DIR/$ASSET" | awk '{print $1}')" "$MOD" "$URL" >> "$OUT/SOURCE_SHA256S.txt"
+          }
+
+          make_module             paper             pro.youniverse.paper             "Paper"             index.html             "https://raw.githubusercontent.com/justappgrabbin/paper/07b5098684e7a981d2df13c36111491765378d14/index.html"
+
+          make_module             paperseed             pro.youniverse.paperseed             "Paper Seed"             index.html             "https://raw.githubusercontent.com/justappgrabbin/Paper-seed/9f2a54248be6e26d82a7cfac80027ed2e9dc6764/index.html"
+
+          make_module             foundryevolution             pro.youniverse.foundryevolution             "Foundry Self-Evolving"             foundry_self_evolving.html             "https://raw.githubusercontent.com/justappgrabbin/Universal-Evolving-hub/ff12ed01eba4d6af4760492619115e1e3bb3d9c6/foundry_self_evolving.html"
+
+          make_module             allthepaper             pro.youniverse.allthepaper             "All The Paper"             index.html             "https://raw.githubusercontent.com/justappgrabbin/all-the-paper/1b5e513b3ed68f788f8912c3a0561127f6d65412/index.html"
+
+          gradle -p "$ROOT"             :paper:assembleDebug             :paperseed:assembleDebug             :foundryevolution:assembleDebug             :allthepaper:assembleDebug             --stacktrace
+
+          cp "$ROOT/paper/build/outputs/apk/debug/paper-debug.apk" "$OUT/Paper.apk"
+          cp "$ROOT/paperseed/build/outputs/apk/debug/paperseed-debug.apk" "$OUT/Paper-Seed.apk"
+          cp "$ROOT/foundryevolution/build/outputs/apk/debug/foundryevolution-debug.apk" "$OUT/Foundry-Self-Evolving.apk"
+          cp "$ROOT/allthepaper/build/outputs/apk/debug/allthepaper-debug.apk" "$OUT/All-The-Paper.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preserved-web-apks
+          path: artifacts/
+          retention-days: 7
+
+  self-evolving-react-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Build original React Native source as APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/artifacts-rn"
+          mkdir -p "$OUT"
+          cd "$RUNNER_TEMP"
+
+          npx --yes @react-native-community/cli@latest init SelfEvolvingAPK --version 0.76.7 --skip-install
+
+          curl -fL --retry 3             "https://raw.githubusercontent.com/justappgrabbin/Self-evolving-/b63e13c77c605c93cd5ad80fec5d48cfb66ee613/Index.html"             -o SelfEvolvingAPK/Index.html
+
+          cp SelfEvolvingAPK/Index.html SelfEvolvingAPK/App.js
+          cmp SelfEvolvingAPK/Index.html SelfEvolvingAPK/App.js
+          rm -f SelfEvolvingAPK/App.tsx
+
+          cd SelfEvolvingAPK
+          npm install
+          npm install @react-native-async-storage/async-storage react-native-fs
+
+          sha256sum Index.html > "$OUT/Self-Evolving-SOURCE_SHA256.txt"
+
+          cd android
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+          cp app/build/outputs/apk/release/app-release.apk "$OUT/Self-Evolving.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: self-evolving-react-native-apk
+          path: artifacts-rn/
+          retention-days: 7
