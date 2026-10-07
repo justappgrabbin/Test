@@ -185,7 +185,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
 
       - name: Build original React Native source as APK
         shell: bash
