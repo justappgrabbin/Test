@@ -1,0 +1,36 @@
+name: Build Wan Mobile Companion APK
+on:
+  push:
+    branches:
+      - 'wan-mobile-build-*'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Restore project and compile
+        run: |
+          mkdir -p wan-mobile
+          base64 --decode wan-mobile-project.b64 > /tmp/wan-mobile-project.zip
+          unzip -q /tmp/wan-mobile-project.zip -d wan-mobile
+          cd wan-mobile
+          gradle --no-daemon assembleDebug
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WanMobileCompanion-debug-apk
+          path: wan-mobile/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
